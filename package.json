@@ -1,0 +1,12 @@
+{
+  "name": "prize-lp-simulation",
+  "version": "1.0.0",
+  "main": "index.js",
+  "author": "Brendan Asselstine",
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^4.1.0",
+    "commander": "^9.4.1",
+    "csv-stringify": "^6.2.2"
+  }
+}
