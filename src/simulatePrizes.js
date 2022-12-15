@@ -1,125 +1,156 @@
 #!/usr/bin/env node
 const chalk = require('chalk')
 const { program } = require('commander')
-const { tierRangePrizeFraction, PrizeDistributor } = require('./PrizeDistributor')
+const { 
+    algo1CalculateTierPrizeCount,
+    algo1CalculateTierPrizeFraction
+} = require('./algo1')
+const { 
+    algo2CalculateTierPrizeCount,
+    algo2CalculateTierPrizeFraction
+} = require('./algo2')
+const { 
+    algo3CalculateTierPrizeCount,
+    algo3CalculateTierPrizeFraction
+} = require('./algo3')
+const { calculateOddsForTier } = require('./odds')
 
-program.option('-u, --users <number>', 'The number of users to generate', 100)
-program.option('-b, --balance <number>', 'The largest deposit for users', 10000)
-program.option('-y, --yield <number>', 'The amount of yield per iteration', 200*7)
-program.option('-i, --iterations <number>', 'The number of iterations to run', 52)
-program.option('-r, --rollover <number>', 'The rollover fraction', 51/52.0)
-program.option('-t, --tiers <number>', 'Maximum tiers to check', 10)
+const command = function (options) {
 
-const MIN_PRIZE = 1
+    console.log(chalk.dim(`Using -y ${options.yield}`))
+    console.log(chalk.dim(`Using -i ${options.iterations}`))
+    console.log(chalk.dim(`Using -l ${options.liquidity}`))
+    console.log(chalk.dim(`Using -r ${options.rollover}`))
+    console.log(chalk.dim(`Using -t ${options.tiers}`))
+    console.log(chalk.dim(`Using -f ${options.fraction}`))
+    console.log(chalk.dim(`Using -u ${options.utilization}`))
 
-// const LP_AMOUNT = 100000
-// const PRIZE_UTILIZATION_RATE = 0.5
-const LP_AMOUNT = 0
-const PRIZE_UTILIZATION_RATE = 1
-
-program.action((options) => {
-
-    console.log(chalk.white(`Users: ${options.users}`))
-    console.log(chalk.white(`Max User Balance: ${options.balance}`))
-    console.log(chalk.white(`Yield per iteration: ${options.yield}`))
-    console.log(chalk.white(`Iterations: ${options.iterations}`))
-    console.log(chalk.white(`Rollover chance: ${options.rollover}`))
-
-    const users = []
-    let totalLiquidity = 0
-    for (let i = 0; i < options.users; i++) {
-        const balance = Math.random() * options.balance
-        // console.log(chalk.dim(`User ${i} balance: ${balance}`))
-        users.push({
-            balance,
-            prizes: []
-        })
-        totalLiquidity += balance
+    let calculateTierPrizeCount
+    let calculateTierPrizeFraction
+    switch (options.algorithm) {
+        case 1:
+            calculateTierPrizeCount = algo1CalculateTierPrizeCount
+            calculateTierPrizeFraction = function () { return algo1CalculateTierPrizeFraction(...arguments, options.fraction) }
+            break
+        case 2:
+            calculateTierPrizeCount = algo2CalculateTierPrizeCount
+            calculateTierPrizeFraction = function () { return algo2CalculateTierPrizeFraction(...arguments, options.fraction) }
+            break
+        case 3:
+            calculateTierPrizeCount = algo3CalculateTierPrizeCount
+            calculateTierPrizeFraction = algo3CalculateTierPrizeFraction
+            break
+        default:
+            throw new Error(`Unknown algorithm ${options.algorithm}`)
     }
 
-    let totalUnaccounted = 0
-    const pd = new PrizeDistributor({ rollover: options.rollover })
-    let prizeLiquidity = LP_AMOUNT;
-    for (let i = 0; i < options.iterations; i++) {
-        prizeLiquidity += options.yield
-        
-        let largestTier = 0
+    let largestClaimedTierSmoothed = 0
 
-        for (let u = 0; u < users.length; u++) {
-            const user = users[u]
-            
-            for (let tier = 0; tier < options.tiers; tier++) {
-                const availablePrizeLiquidity = PRIZE_UTILIZATION_RATE*prizeLiquidity
-                const maxIndex = 2**tier
-                const prizeSize = pd.prizeSize(tier, availablePrizeLiquidity)
-                if (prizeSize < MIN_PRIZE) {
-                    break;
+    let iterationPrizes = []
+    let prizeLiquidity = parseInt(options.liquidity)
+    let numTiers = options.tiers
+    for (let i = 0; i < options.iterations; i++) {
+        const prizes = []
+        let largestTier = null
+        prizeLiquidity += parseInt(options.yield)
+        const iterationLiquidity = prizeLiquidity
+        const multiplier = iterationLiquidity / options.yield
+        console.log(`Iteration ${i} multiplier: ${multiplier}`)
+        for (let t = 0; t < numTiers; t++) {
+            const prizeCount = calculateTierPrizeCount(t, numTiers)
+            if (prizeCount == 0) continue
+            const tierFraction = calculateTierPrizeFraction(t, numTiers)
+            const tierLiquidity = tierFraction * iterationLiquidity
+            const prizeSize = tierLiquidity / prizeCount
+            if (prizeSize < MIN_PRIZE) {
+                // console.log(`Tier ${t}: No prize`)
+                continue
+            }
+
+            // console.log(chalk.dim(`Tier ${t} fraction ${tierFraction} has ${prizeCount} prizes worth ${prizeSize} each`))
+            let awardedPrizeCount = 0
+            const odds = 1
+            // const odds = calculateOddsForTier(t, numTiers)
+            // const odds = calculateOddsForTier(t, numTiers, 1, 100, 100)
+            for (let p = 0; p < prizeCount; p++) {
+                const rand = Math.random()
+                // console.log(multiplier, rand, odds, options.rollover)
+                if (rand > odds) {
+                    continue;
                 }
-                if (tier > largestTier) {
-                    largestTier = tier
+                // if (prizeLiquidity < prizeSize) {
+                //     throw new Error(`Insufficient prize liquidity ${prizeLiquidity} for prize ${prizeSize} for i ${i}, t ${t}`)
+                // }
+                awardedPrizeCount++
+                prizeLiquidity -= prizeSize
+            }
+
+            if (awardedPrizeCount > 0) {
+                if (largestTier == null || t > largestTier) {
+                    largestTier = t
                 }
-                for (let index = 0; index < maxIndex; index++) {
-                    const randomNumber = Math.random()
-                    if (pd.isWinner(user.balance, totalLiquidity, randomNumber * totalLiquidity*10, options.yield, prizeLiquidity)) {
-                        if (prizeLiquidity < prizeSize) {
-                            throw new Error(`No more prize liquidity at iteration ${i}, user ${u}, tier ${tier}, index ${index}`)
-                        }
-                        prizeLiquidity -= prizeSize
-                        user.prizes.push({
-                            tier, index, prizeSize, user: u
-                        })
-                    }
-                }
+                // console.log(`Tier ${t} odds: ${odds} and prize count: ${prizeCount} actual: ${awardedPrizeCount}, odds: ${odds}`)
+                prizes.push({
+                    tier: t,
+                    prizeCount: awardedPrizeCount,
+                    prizeSize
+                })
             }
         }
-
-        const fraction = tierRangePrizeFraction(largestTier, 100000)
-        const unaccounted = prizeLiquidity*fraction
-        totalUnaccounted += unaccounted
-        // console.log(chalk.bold(`Iteration ${i} had highest tier ${largestTier} with remaining at ${unaccounted} out of ${prizeLiquidity}`))
+        // if a prize wasn't awarded then reduce the num tiers
+        if (largestTier == null && numTiers > 1) {
+            numTiers--
+        } else {
+            numTiers = largestTier + 2
+        }
+        // console.log(`Iteration ${i}: numTiers: ${numTiers} prizeLiquidity: ${prizeLiquidity}`)
+        // console.log(`largestClaimedTierSmoothed: ${largestClaimedTierSmoothed}, largestTier: ${largestTier}`)
+        iterationPrizes.push(prizes)
     }
 
-    let tierPrizes = {}
-
-    for (let u = 0; u < users.length; u++) {
-        const user = users[u]
-        for (let p = 0; p < user.prizes.length; p++) {
-            const prize = user.prizes[p]
+    let totalPrizeCount = 0
+    let totalPrizeAmount = 0
+    const tierPrizes = {}
+    for (let i = 0; i < options.iterations; i++) {
+        const iPrizes = iterationPrizes[i]
+        iPrizes.forEach(prize => {
             if (!tierPrizes[prize.tier]) {
                 tierPrizes[prize.tier] = []
             }
             tierPrizes[prize.tier].push(prize)
-        }
+        })
+        totalPrizeCount += iPrizes.reduce((total, prize) => (total + prize.prizeCount), 0)
+        totalPrizeAmount += iPrizes.reduce((total, prize) => (total + prize.prizeSize*prize.prizeCount), 0)
     }
 
-    let totalPrizeCount = 0
-    let totalPrizes = 0
-    for (let i = 0; i < options.tiers; i++) {
-        const tierPrize = tierPrizes[i]
-        if (tierPrize) {
-            const largest = tierPrize.reduce((prev, current) => prev.prizeSize < current.prizeSize ? current : prev)
-            const smallest = tierPrize.reduce((prev, current) => prev.prizeSize > current.prizeSize ? current : prev)
-            const total = tierPrize.reduce((prev, current) => prev + current.prizeSize, 0)
-            totalPrizeCount += tierPrize.length
-            totalPrizes += total
-            console.log(chalk.dim(`Tier ${i}: expected: ${options.iterations * 2**i}, prize count: ${tierPrize.length}, largest ${Math.round(largest.prizeSize)}, smallest ${Math.round(smallest.prizeSize)}, total: ${total}`))
-        }
-    }
+    let tierPrizesKeys = Object.keys(tierPrizes).sort()
+    tierPrizesKeys.forEach(key => {
+        const t = parseInt(key)
+        tierPrize = tierPrizes[key]
+        const largest = Math.floor(100*tierPrize.reduce((biggest, prize) => biggest < prize.prizeSize ? prize.prizeSize : biggest, 0))/100.0
+        const smallest = Math.floor(100*tierPrize.reduce((smallest, prize) => smallest > prize.prizeSize ? prize.prizeSize : smallest, Infinity))/100.0
+        const total = tierPrize.reduce((sum, prize) => sum + prize.prizeSize * prize.prizeCount, 0)
+        const count = tierPrize.reduce((sum, prize) => sum + prize.prizeCount, 0)
+        console.log(chalk.white(`Tier ${t} largest prize: ${largest}, count: ${count}, total: ${total}`))
+    })
 
-    // console.log(chalk.cyan(`Unaccounted tier funds: ${tierRangePrizeFraction(options.tiers, 9999) * (prizeLiquidity+totalPrizes)}`))
     console.log(chalk.cyan(`Total number of prizes: ${totalPrizeCount}`))
-    console.log(chalk.cyan(`Total prize amount given out: ${totalPrizes}`))
-    console.log(chalk.cyan(`Total unaccounted: ${totalUnaccounted}`))
+    console.log(chalk.cyan(`Total prize amount given out: ${totalPrizeAmount}`))
     console.log(chalk.dim(`prize liquidity remaining: ${prizeLiquidity}`))
-    if (LP_AMOUNT > 0) {
-        if (prizeLiquidity > LP_AMOUNT) {
-            console.log(chalk.green(`LP made ${prizeLiquidity - LP_AMOUNT} dollars, or ${100*(prizeLiquidity - LP_AMOUNT) / LP_AMOUNT}%`))
-        } else {
-            console.log(chalk.red(`LP lost ${LP_AMOUNT - prizeLiquidity} dollars`))
-        }
-    }
+    console.log(chalk.green("Done!"))
+}
 
-    console.log(chalk.green("Ok!"))
-})
+program.option('-y, --yield <number>', 'The amount of yield per iteration', 200)
+program.option('-i, --iterations <number>', 'The number of iterations to run', 365)
+program.option('-l, --liquidity <number>', 'The starting prize liquidity', 0)
+program.option('-r, --rollover <number>', 'The rollover fraction', 364/365.0)
+program.option('-t, --tiers <number>', 'Starting number of tiers', 1)
+program.option('-f, --fraction <number>', 'Floor fraction for algo2', 0.2)
+program.option('-a, --algorithm <number>', 'Pick algorithm number', 3)
+program.option('-u, --utilization <number>', 'The utilization of the yield', 0.9)
+
+const MIN_PRIZE = 0.5
+
+program.action(command)
 
 program.parse()
