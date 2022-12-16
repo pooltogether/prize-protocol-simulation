@@ -1,110 +1,83 @@
 #!/usr/bin/env node
 const chalk = require('chalk')
 const { program } = require('commander')
-const { 
-    algo1CalculateTierPrizeCount,
-    algo1CalculateTierPrizeFraction
-} = require('./algo1')
-const { 
-    algo2CalculateTierPrizeCount,
-    algo2CalculateTierPrizeFraction
-} = require('./algo2')
-const { 
-    algo3CalculateTierPrizeCount,
-    algo3CalculateTierPrizeFraction
-} = require('./algo3')
-const { calculateOddsForTier } = require('./odds')
+
+const MIN_PRIZE = 0.5
+
+const USER_BALANCE = 1000
 
 const command = function (options) {
 
-    console.log(chalk.dim(`Using -y ${options.yield}`))
-    console.log(chalk.dim(`Using -i ${options.iterations}`))
-    console.log(chalk.dim(`Using -l ${options.liquidity}`))
-    console.log(chalk.dim(`Using -r ${options.rollover}`))
-    console.log(chalk.dim(`Using -t ${options.tiers}`))
-    console.log(chalk.dim(`Using -f ${options.fraction}`))
-    console.log(chalk.dim(`Using -u ${options.utilization}`))
-
-    let calculateTierPrizeCount
-    let calculateTierPrizeFraction
-    switch (options.algorithm) {
-        case 1:
-            calculateTierPrizeCount = algo1CalculateTierPrizeCount
-            calculateTierPrizeFraction = function () { return algo1CalculateTierPrizeFraction(...arguments, options.fraction) }
-            break
-        case 2:
-            calculateTierPrizeCount = algo2CalculateTierPrizeCount
-            calculateTierPrizeFraction = function () { return algo2CalculateTierPrizeFraction(...arguments, options.fraction) }
-            break
-        case 3:
-            calculateTierPrizeCount = algo3CalculateTierPrizeCount
-            calculateTierPrizeFraction = algo3CalculateTierPrizeFraction
-            break
-        default:
-            throw new Error(`Unknown algorithm ${options.algorithm}`)
-    }
-
-    let largestClaimedTierSmoothed = 0
+    console.log(chalk.dim(`Using --yield ${options.yield}`))
+    console.log(chalk.dim(`Using --iterations ${options.iterations}`))
+    console.log(chalk.dim(`Using --users ${options.users}`))
+    console.log(chalk.dim(`Using --tiers ${options.tiers}`))
 
     let iterationPrizes = []
-    let prizeLiquidity = parseInt(options.liquidity)
+    let prizeLiquidity = 0
     let numTiers = options.tiers
+
+    const SHARES_PER_TIER = 100
+    const CANARY_SHARE = 1
+    const TOTAL_SUPPLY = USER_BALANCE*options.users
+
+    function totalShares(numTiers) {
+        return numTiers * SHARES_PER_TIER + CANARY_SHARE
+    }
+    
+    // Store the last exchange rate for tiers. This is the exchange rate they last claimed at
+    let tierExchangeRates = {}
+    // Store the global yield share exchange rate.
+    let yieldShareExchangeRate = 0
+
     for (let i = 0; i < options.iterations; i++) {
         const prizes = []
-        let largestTier = null
         prizeLiquidity += parseInt(options.yield)
-        const iterationLiquidity = prizeLiquidity
-        const multiplier = iterationLiquidity / options.yield
-        console.log(`Iteration ${i} multiplier: ${multiplier}`)
+        yieldShareExchangeRate = yieldShareExchangeRate + options.yield / totalShares(numTiers)
+        
+        let largestTier = null
+
         for (let t = 0; t < numTiers; t++) {
-            const prizeCount = calculateTierPrizeCount(t, numTiers)
-            if (prizeCount == 0) continue
-            const tierFraction = calculateTierPrizeFraction(t, numTiers)
-            const tierLiquidity = tierFraction * iterationLiquidity
-            const prizeSize = tierLiquidity / prizeCount
-            if (prizeSize < MIN_PRIZE) {
-                // console.log(`Tier ${t}: No prize`)
-                continue
+            if (!tierExchangeRates[t]) {
+                tierExchangeRates[t] = 0
             }
+            const tierLiquidity = (yieldShareExchangeRate - tierExchangeRates[t])*SHARES_PER_TIER
 
-            // console.log(chalk.dim(`Tier ${t} fraction ${tierFraction} has ${prizeCount} prizes worth ${prizeSize} each`))
-            let awardedPrizeCount = 0
-            const odds = 1
-            // const odds = calculateOddsForTier(t, numTiers)
-            // const odds = calculateOddsForTier(t, numTiers, 1, 100, 100)
-            for (let p = 0; p < prizeCount; p++) {
-                const rand = Math.random()
-                // console.log(multiplier, rand, odds, options.rollover)
-                if (rand > odds) {
-                    continue;
+            const tierPrizeCount = 8**t
+            const prizeSize = tierLiquidity / tierPrizeCount
+            const tierOdds = 3**-(numTiers-1-t)
+
+            let tierAwardedPrizeLiquidity = 0
+            let tierAwardedPrizeCount = 0
+            for (let u = 0; u < options.users; u++) {
+                const divRand = (Math.random()*TOTAL_SUPPLY) / tierPrizeCount
+                const totalOdds = tierOdds*USER_BALANCE
+                const isWinner = divRand < totalOdds
+                if (isWinner && prizeSize >= MIN_PRIZE) {
+                    // do the win
+                    tierAwardedPrizeLiquidity += prizeSize
+                    tierAwardedPrizeCount++
                 }
-                // if (prizeLiquidity < prizeSize) {
-                //     throw new Error(`Insufficient prize liquidity ${prizeLiquidity} for prize ${prizeSize} for i ${i}, t ${t}`)
-                // }
-                awardedPrizeCount++
-                prizeLiquidity -= prizeSize
             }
 
-            if (awardedPrizeCount > 0) {
+            if (tierAwardedPrizeCount > 0) {
+                // make sure we record the largest tier
                 if (largestTier == null || t > largestTier) {
                     largestTier = t
                 }
-                // console.log(`Tier ${t} odds: ${odds} and prize count: ${prizeCount} actual: ${awardedPrizeCount}, odds: ${odds}`)
+                // record prizes
                 prizes.push({
                     tier: t,
-                    prizeCount: awardedPrizeCount,
+                    prizeCount: tierAwardedPrizeCount,
                     prizeSize
                 })
             }
+
+            prizeLiquidity -= tierAwardedPrizeLiquidity
+            const deltaExchangeRate = tierAwardedPrizeLiquidity / SHARES_PER_TIER
+            tierExchangeRates[t] += deltaExchangeRate
         }
-        // if a prize wasn't awarded then reduce the num tiers
-        if (largestTier == null && numTiers > 1) {
-            numTiers--
-        } else {
-            numTiers = largestTier + 2
-        }
-        // console.log(`Iteration ${i}: numTiers: ${numTiers} prizeLiquidity: ${prizeLiquidity}`)
-        // console.log(`largestClaimedTierSmoothed: ${largestClaimedTierSmoothed}, largestTier: ${largestTier}`)
+
         iterationPrizes.push(prizes)
     }
 
@@ -135,21 +108,16 @@ const command = function (options) {
     })
 
     console.log(chalk.cyan(`Total number of prizes: ${totalPrizeCount}`))
+    console.log(chalk.cyan(`Prizes per iteration: ${totalPrizeCount / options.iterations}`))
     console.log(chalk.cyan(`Total prize amount given out: ${totalPrizeAmount}`))
     console.log(chalk.dim(`prize liquidity remaining: ${prizeLiquidity}`))
     console.log(chalk.green("Done!"))
 }
 
-program.option('-y, --yield <number>', 'The amount of yield per iteration', 200)
-program.option('-i, --iterations <number>', 'The number of iterations to run', 365)
-program.option('-l, --liquidity <number>', 'The starting prize liquidity', 0)
-program.option('-r, --rollover <number>', 'The rollover fraction', 364/365.0)
-program.option('-t, --tiers <number>', 'Starting number of tiers', 1)
-program.option('-f, --fraction <number>', 'Floor fraction for algo2', 0.2)
-program.option('-a, --algorithm <number>', 'Pick algorithm number', 3)
-program.option('-u, --utilization <number>', 'The utilization of the yield', 0.9)
-
-const MIN_PRIZE = 0.5
+program.option('-y, --yield <number>', 'The amount of yield per iteration', 300)
+program.option('-i, --iterations <number>', 'The number of iterations to run', 1)
+program.option('-u, --users <number>', 'The number of users to randomize', 1)
+program.option('-t, --tiers <number>', 'The number of tiers', 1)
 
 program.action(command)
 
