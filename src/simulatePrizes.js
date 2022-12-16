@@ -2,7 +2,7 @@
 const chalk = require('chalk')
 const { program } = require('commander')
 
-const MIN_PRIZE = 0.5
+const MIN_PRIZE = 1
 
 const USER_BALANCE = 1000
 
@@ -18,7 +18,7 @@ const command = function (options) {
     let numTiers = options.tiers
 
     const SHARES_PER_TIER = 100
-    const CANARY_SHARE = 1
+    const CANARY_SHARE = 5
     const TOTAL_SUPPLY = USER_BALANCE*options.users
 
     function totalShares(numTiers) {
@@ -27,6 +27,7 @@ const command = function (options) {
     
     // Store the last exchange rate for tiers. This is the exchange rate they last claimed at
     let tierExchangeRates = {}
+    let canaryExchangeRate = 0
     // Store the global yield share exchange rate.
     let yieldShareExchangeRate = 0
 
@@ -36,6 +37,7 @@ const command = function (options) {
         yieldShareExchangeRate = yieldShareExchangeRate + options.yield / totalShares(numTiers)
         
         let largestTier = null
+        let highestTierClaimPassed = false
 
         for (let t = 0; t < numTiers; t++) {
             if (!tierExchangeRates[t]) {
@@ -76,6 +78,50 @@ const command = function (options) {
             prizeLiquidity -= tierAwardedPrizeLiquidity
             const deltaExchangeRate = tierAwardedPrizeLiquidity / SHARES_PER_TIER
             tierExchangeRates[t] += deltaExchangeRate
+
+            if (tierAwardedPrizeCount > 0.9*tierPrizeCount) {
+                highestTierClaimPassed = true
+            }
+        }
+
+        // now do Canary
+        const canaryLiquidity = (yieldShareExchangeRate - canaryExchangeRate)*CANARY_SHARE
+        const actualCanaryPrizeCount = 8**numTiers
+        const m3 = CANARY_SHARE / totalShares(numTiers)
+        const l3 = SHARES_PER_TIER / totalShares(numTiers+1)
+        const prizeCountMultiplier = m3/l3
+        const canaryPrizeCount = Math.round(actualCanaryPrizeCount * prizeCountMultiplier)
+        const canaryPrizeSize = canaryLiquidity / canaryPrizeCount
+        let canaryAwardedPrizeLiquidity = 0
+        let canaryAwardedPrizeCount = 0
+        for (let u = 0; u < options.users; u++) {
+            const divRand = (Math.random()*TOTAL_SUPPLY) / canaryPrizeCount
+            const isWinner = divRand < USER_BALANCE
+            if (isWinner && canaryPrizeSize >= MIN_PRIZE) {
+                // do the win
+                canaryAwardedPrizeLiquidity += canaryPrizeSize
+                canaryAwardedPrizeCount++
+            }
+        }
+
+        if (canaryAwardedPrizeCount > 0) {
+            prizeLiquidity -= canaryAwardedPrizeLiquidity
+            const canaryDeltaExchangeRate = canaryAwardedPrizeLiquidity / CANARY_SHARE
+            canaryExchangeRate += canaryDeltaExchangeRate
+
+            // record prizes
+            prizes.push({
+                tier: numTiers,
+                prizeCount: canaryAwardedPrizeCount,
+                prizeSize: canaryPrizeSize
+            })
+        }
+
+        const canaryPassed = canaryAwardedPrizeCount > 0.9*canaryPrizeCount
+        if (highestTierClaimPassed && canaryPassed) {
+            numTiers++
+        } else {
+            numTiers = largestTier+1
         }
 
         iterationPrizes.push(prizes)
