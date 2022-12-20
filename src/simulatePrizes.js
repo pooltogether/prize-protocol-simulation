@@ -18,7 +18,7 @@ const command = function (options) {
     let numTiers = options.tiers
 
     const SHARES_PER_TIER = 100
-    const CANARY_SHARE = 5
+    const CANARY_SHARE = 20
     const TOTAL_SUPPLY = USER_BALANCE*options.users
 
     function totalShares(numTiers) {
@@ -32,6 +32,7 @@ const command = function (options) {
     let yieldShareExchangeRate = 0
     let canaryCarried = 0
     let canarySpent = 0
+    let largestDeficit = 0
 
     for (let i = 0; i < options.iterations; i++) {
         const prizes = []
@@ -80,6 +81,9 @@ const command = function (options) {
             prizeLiquidity -= tierAwardedPrizeLiquidity
             if (prizeLiquidity < 0) {
                 console.log(chalk.red(`Warning: negative liquidity on iteration ${i} at tier ${t}: ${prizeLiquidity}`))
+                if (prizeLiquidity < largestDeficit) {
+                    largestDeficit = prizeLiquidity
+                }
             }
             const deltaExchangeRate = tierAwardedPrizeLiquidity / SHARES_PER_TIER
             tierExchangeRates[t] += deltaExchangeRate
@@ -199,6 +203,7 @@ const command = function (options) {
     console.log(chalk.cyan(`Total prize amount given out: ${totalPrizeAmount}`))
     console.log(chalk.cyan(`Canary carried: ${canaryCarried}`))
     console.log(chalk.cyan(`Canary spent: ${canarySpent}`))
+    console.log(chalk.yellow(`Largest deficit: ${largestDeficit}`))
     console.log(chalk.dim(`prize liquidity remaining: ${prizeLiquidity}`))
     console.log(chalk.dim(`total yield: ${prizeLiquidity + totalPrizeAmount}`))
     console.log(chalk.green("Done!"))
