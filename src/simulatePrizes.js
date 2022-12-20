@@ -30,6 +30,8 @@ const command = function (options) {
     let canaryExchangeRate = 0
     // Store the global yield share exchange rate.
     let yieldShareExchangeRate = 0
+    let canaryCarried = 0
+    let canarySpent = 0
 
     for (let i = 0; i < options.iterations; i++) {
         const prizes = []
@@ -76,6 +78,9 @@ const command = function (options) {
             }
 
             prizeLiquidity -= tierAwardedPrizeLiquidity
+            if (prizeLiquidity < 0) {
+                console.log(chalk.red(`Warning: negative liquidity on iteration ${i} at tier ${t}: ${prizeLiquidity}`))
+            }
             const deltaExchangeRate = tierAwardedPrizeLiquidity / SHARES_PER_TIER
             tierExchangeRates[t] += deltaExchangeRate
 
@@ -86,17 +91,21 @@ const command = function (options) {
 
         // now do Canary
         const canaryLiquidity = (yieldShareExchangeRate - canaryExchangeRate)*CANARY_SHARE
+
         const actualCanaryPrizeCount = 8**numTiers
         const m3 = CANARY_SHARE / totalShares(numTiers)
         const l3 = SHARES_PER_TIER / totalShares(numTiers+1)
         const prizeCountMultiplier = m3/l3
         const canaryPrizeCount = Math.round(actualCanaryPrizeCount * prizeCountMultiplier)
         const canaryPrizeSize = canaryLiquidity / canaryPrizeCount
+
+        // console.log(`canary iteration ${i} liquidity: ${canaryLiquidity},  vs count*size: ${canaryPrizeSize*canaryPrizeCount}`)
+
         let canaryAwardedPrizeLiquidity = 0
         let canaryAwardedPrizeCount = 0
         for (let u = 0; u < options.users; u++) {
-            const divRand = (Math.random()*TOTAL_SUPPLY) / canaryPrizeCount
-            const isWinner = divRand < USER_BALANCE
+            // const divRand = (Math.random()*TOTAL_SUPPLY) / canaryPrizeCount
+            const isWinner = Math.random() < (USER_BALANCE/TOTAL_SUPPLY) * canaryPrizeCount
             if (isWinner && canaryPrizeSize >= MIN_PRIZE) {
                 // do the win
                 canaryAwardedPrizeLiquidity += canaryPrizeSize
@@ -104,24 +113,56 @@ const command = function (options) {
             }
         }
 
-        if (canaryAwardedPrizeCount > 0) {
-            prizeLiquidity -= canaryAwardedPrizeLiquidity
-            const canaryDeltaExchangeRate = canaryAwardedPrizeLiquidity / CANARY_SHARE
-            canaryExchangeRate += canaryDeltaExchangeRate
+        // console.log(`canaryAwardedPrizeLiquidity: ${canaryAwardedPrizeLiquidity}, canaryAwardedPrizeCount: ${canaryAwardedPrizeCount}`)
 
+        if (canaryAwardedPrizeCount > 0) {
+            canarySpent += canaryAwardedPrizeLiquidity
+            prizeLiquidity -= canaryAwardedPrizeLiquidity
+            // console.log('Canary spent', { canaryAwardedPrizeLiquidity, canaryLiquidity, canaryPrizeCount, canaryPrizeSize })
+            
             // record prizes
             prizes.push({
                 tier: numTiers,
                 prizeCount: canaryAwardedPrizeCount,
                 prizeSize: canaryPrizeSize
             })
-        }
-
-        const canaryPassed = canaryAwardedPrizeCount > 0.9*canaryPrizeCount
-        if (highestTierClaimPassed && canaryPassed) {
-            numTiers++
         } else {
-            numTiers = largestTier+1
+            canaryCarried += canaryLiquidity
+            // console.log('Canary carried over', { canaryLiquidity, canaryPrizeCount, canaryPrizeSize })
+        }
+        
+        canaryExchangeRate = yieldShareExchangeRate
+        const canaryPassed = canaryAwardedPrizeCount > 0.9*canaryPrizeCount
+        // if we are expanding the tiers
+        if (highestTierClaimPassed && canaryPassed) {
+            // set the expansion tier to the current exchange rate
+            tierExchangeRates[numTiers] = yieldShareExchangeRate
+            numTiers++
+            console.log(chalk.green(`INCREASE TO ${numTiers}`))
+        } else {
+            const nextTiers = largestTier+1
+            let tierDeltaExchangeRate = 0
+            if (numTiers > nextTiers) {
+                // For each tier that will be removed
+                for (let tier = numTiers - 1; tier != nextTiers; tier--) {
+                    // redistribute remaining yield
+                    
+                    // determine how many tokens were allocated
+                    let tokens = (yieldShareExchangeRate - tierExchangeRates[tier])*SHARES_PER_TIER
+
+                    // re-allocate those tokens to the remaining tiers
+                    tierDeltaExchangeRate += tokens / totalShares(nextTiers)
+
+                    // reset that tier
+                    tierExchangeRates[tier] = 0
+                }
+                yieldShareExchangeRate += tierDeltaExchangeRate
+            }
+
+            if (numTiers != nextTiers) {
+                console.log(chalk.yellow(`ADJUST FROM ${numTiers} TO ${nextTiers}`))
+            }
+            numTiers = nextTiers
         }
 
         iterationPrizes.push(prizes)
@@ -156,7 +197,10 @@ const command = function (options) {
     console.log(chalk.cyan(`Total number of prizes: ${totalPrizeCount}`))
     console.log(chalk.cyan(`Prizes per iteration: ${totalPrizeCount / options.iterations}`))
     console.log(chalk.cyan(`Total prize amount given out: ${totalPrizeAmount}`))
+    console.log(chalk.cyan(`Canary carried: ${canaryCarried}`))
+    console.log(chalk.cyan(`Canary spent: ${canarySpent}`))
     console.log(chalk.dim(`prize liquidity remaining: ${prizeLiquidity}`))
+    console.log(chalk.dim(`total yield: ${prizeLiquidity + totalPrizeAmount}`))
     console.log(chalk.green("Done!"))
 }
 
