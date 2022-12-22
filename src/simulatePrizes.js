@@ -18,7 +18,7 @@ const command = function (options) {
     let numTiers = options.tiers
 
     const SHARES_PER_TIER = 100
-    const CANARY_SHARE = 20
+    const CANARY_SHARE = 40
     const TOTAL_SUPPLY = USER_BALANCE*options.users
 
     function totalShares(numTiers) {
@@ -30,7 +30,7 @@ const command = function (options) {
     let canaryExchangeRate = 0
     // Store the global yield share exchange rate.
     let yieldShareExchangeRate = 0
-    let canaryCarried = 0
+    let reserve = 0
     let canarySpent = 0
     let largestDeficit = 0
 
@@ -80,7 +80,7 @@ const command = function (options) {
 
             prizeLiquidity -= tierAwardedPrizeLiquidity
             if (prizeLiquidity < 0) {
-                console.log(chalk.red(`Warning: negative liquidity on iteration ${i} at tier ${t}: ${prizeLiquidity}`))
+                console.log(chalk.red(`Warning: negative liquidity on iteration ${i} at tier ${t}: ${prizeLiquidity}.  Current reserve is ${reserve}.  Diff is ${prizeLiquidity + reserve}`))
                 if (prizeLiquidity < largestDeficit) {
                     largestDeficit = prizeLiquidity
                 }
@@ -122,6 +122,7 @@ const command = function (options) {
         if (canaryAwardedPrizeCount > 0) {
             canarySpent += canaryAwardedPrizeLiquidity
             prizeLiquidity -= canaryAwardedPrizeLiquidity
+            reserve += canaryLiquidity - canaryAwardedPrizeLiquidity
             // console.log('Canary spent', { canaryAwardedPrizeLiquidity, canaryLiquidity, canaryPrizeCount, canaryPrizeSize })
             
             // record prizes
@@ -131,8 +132,7 @@ const command = function (options) {
                 prizeSize: canaryPrizeSize
             })
         } else {
-            canaryCarried += canaryLiquidity
-            // console.log('Canary carried over', { canaryLiquidity, canaryPrizeCount, canaryPrizeSize })
+            reserve += canaryLiquidity
         }
         
         canaryExchangeRate = yieldShareExchangeRate
@@ -142,7 +142,7 @@ const command = function (options) {
             // set the expansion tier to the current exchange rate
             tierExchangeRates[numTiers] = yieldShareExchangeRate
             numTiers++
-            console.log(chalk.green(`INCREASE TO ${numTiers}`))
+            // console.log(chalk.green(`ITER ${i}: INCREASE TO ${numTiers}`))
         } else {
             const nextTiers = largestTier+1
             let tierDeltaExchangeRate = 0
@@ -154,8 +154,8 @@ const command = function (options) {
                     // determine how many tokens were allocated
                     let tokens = (yieldShareExchangeRate - tierExchangeRates[tier])*SHARES_PER_TIER
 
-                    // re-allocate those tokens to the remaining tiers
-                    tierDeltaExchangeRate += tokens / totalShares(nextTiers)
+                    // add those tokens to the reserve
+                    reserve += tokens
 
                     // reset that tier
                     tierExchangeRates[tier] = 0
@@ -163,9 +163,9 @@ const command = function (options) {
                 yieldShareExchangeRate += tierDeltaExchangeRate
             }
 
-            if (numTiers != nextTiers) {
-                console.log(chalk.yellow(`ADJUST FROM ${numTiers} TO ${nextTiers}`))
-            }
+            // if (numTiers != nextTiers) {
+            //     console.log(chalk.yellow(`ITER ${i}: ADJUST FROM ${numTiers} TO ${nextTiers}`))
+            // }
             numTiers = nextTiers
         }
 
@@ -201,8 +201,8 @@ const command = function (options) {
     console.log(chalk.cyan(`Total number of prizes: ${totalPrizeCount}`))
     console.log(chalk.cyan(`Prizes per iteration: ${totalPrizeCount / options.iterations}`))
     console.log(chalk.cyan(`Total prize amount given out: ${totalPrizeAmount}`))
-    console.log(chalk.cyan(`Canary carried: ${canaryCarried}`))
     console.log(chalk.cyan(`Canary spent: ${canarySpent}`))
+    console.log(chalk.cyan(`Reserve: ${reserve}`))
     console.log(chalk.yellow(`Largest deficit: ${largestDeficit}`))
     console.log(chalk.dim(`prize liquidity remaining: ${prizeLiquidity}`))
     console.log(chalk.dim(`total yield: ${prizeLiquidity + totalPrizeAmount}`))

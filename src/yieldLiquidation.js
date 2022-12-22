@@ -17,7 +17,7 @@ program
     .option(
         '-a, --ema-alpha <number>',
         'adjust how “reactive” the yield moving average is. Higher alpha means more weighting on recent values. Low alpha means broader, more smoothed average',
-        0.7
+        1
     )
     .option(
         '-s, --swap-multiplier <number>',
@@ -27,7 +27,7 @@ program
     .option(
         '-l, --liquidity-fraction <number>',
         'Determines the size of virtual LP to the average yield. Lower values make for efficient swaps, but it will track downward price swings poorly.',
-        0.05
+        0.02
     )
     .option(
         '-o, --output-csv <path>',
@@ -78,6 +78,7 @@ function swap(yieldAmountOut, accruedYield, cpmm) {
     const poolAmountIn = getAmountIn(yieldAmountOut, cpmm.poolVirtualReserve, cpmm.yieldVirtualReserve)
     const yieldVirtualReserve = cpmm.yieldVirtualReserve - yieldAmountOut
     const poolVirtualReserve = cpmm.poolVirtualReserve + poolAmountIn
+    // dim(`swap k: ${parseInt(poolVirtualReserve * yieldVirtualReserve)}`)
 
     // Apply downward pressure to drive price down.
     const swapMultiplier = parseFloat(options.swapMultiplier)
@@ -87,17 +88,17 @@ function swap(yieldAmountOut, accruedYield, cpmm) {
     const poolVirtualReserveWithDownwardPressure = poolVirtualReserve + additionalDownwardPressurePoolIn
 
     // accrued yield is a sawtooth. So we apply a low-pass filter to calculate a moving average. over X seconds.
-    // const emaAlpha = parseFloat(options.emaAlpha)
-    // const accruedYieldMovingAverage = (accruedYield * emaAlpha) + (cpmm.accruedYieldMovingAverage*(1-emaAlpha))
+    const emaAlpha = parseFloat(options.emaAlpha)
+    const accruedYieldMovingAverage = (accruedYield * emaAlpha) + (cpmm.accruedYieldMovingAverage*(1-emaAlpha))
 
     // now, we want to ensure that the accrued yield is always a small fraction of virtual LP position.
     const liquidityFraction = parseFloat(options.liquidityFraction)
-    const multiplier = accruedYield / (yieldVirtualReserveWithDownwardPressure*liquidityFraction)
+    const multiplier = accruedYieldMovingAverage / (yieldVirtualReserveWithDownwardPressure*liquidityFraction)
 
     const resultCpmm = {
         yieldVirtualReserve: multiplier * yieldVirtualReserveWithDownwardPressure,
         poolVirtualReserve: multiplier * poolVirtualReserveWithDownwardPressure,
-        accruedYieldMovingAverage: 0
+        accruedYieldMovingAverage
     }
 
     return resultCpmm
@@ -146,23 +147,23 @@ async function run() {
         150: 20,
         180: 22,
         200: 24,
-        240: 28,
-        280: 32,
-        320: 36,
-        350: 44,
-        400: 50,
-        450: 40,
-        500: 30,
-        600: 20,
-        700: 10,
-        600: 5
+        240: 26,
+        280: 28,
+        320: 30,
+        350: 32,
+        400: 30,
+        450: 22,
+        500: 16,
+        600: 10,
+        700: 8
     }
 
     let accrualRates = {
         0: 10,
-        100: 100,
-        400: 1000,
-        // 800: 10000
+        10: 100,
+        100: 1000,
+        400: 100,
+        800: 10
     }
 
     // x = yield
@@ -249,7 +250,7 @@ async function run() {
             }
 
             const details = [
-                `@ ${time} efficiency ${parseInt(efficiency * 100)}`,
+                `@ ${time} efficiency ${parseInt(efficiency * 10000) / 100.0}`,
                 `moving average: ${cpmm.accruedYieldMovingAverage}`,
                 `vr yield: ${cpmm.yieldVirtualReserve}`,
                 `vr pool: ${cpmm.poolVirtualReserve}`,
@@ -259,7 +260,7 @@ async function run() {
                 `swapExchangeRate ${swapExchangeRate}`,
                 `remainingYield ${accruedYield}`
             ]
-            // console.log(chalk.green(details.join('\n\t')))
+            console.log(chalk.green(details.join('\n\t')))
         }
     }
 
@@ -267,7 +268,7 @@ async function run() {
         stringifier.pipe(writeableStream)
     }
 
-    console.log(chalk.cyan(`\n${arbCount} arbs brought in ${poolIncome} POOL should have been ${idealPoolIncome}, efficiency: ${Math.round(100*poolIncome / idealPoolIncome)}%`))
+    console.log(chalk.cyan(`\n${arbCount} arbs brought in ${poolIncome} POOL should have been ${idealPoolIncome}, efficiency: ${Math.round(10000*poolIncome / idealPoolIncome)/100.0}%`))
     console.log(chalk.cyan(`\nremaining yield: ${accruedYield}`))
 }
 
