@@ -63,6 +63,7 @@ const command = function (options) {
     let reserve = 0
     let canarySpent = 0
     let largestDeficit = 0
+    let largestNumTiers = 0
 
     function getTierLiquidity(t) {
         let exchangeRate = tierExchangeRates[t]
@@ -93,9 +94,12 @@ const command = function (options) {
         let largestTier = null
         let highestTierClaimPassed = false
 
+        
         const iterationState = [i, options.yield]
         for (let t = 0; t < numTiers; t++) {
             iterationState.push(getTierLiquidity(t))
+            iterationState.push(prizeCount(t))
+            iterationState.push(getTierLiquidity(t) / prizeCount(t))
         }
         iterationState.push(canaryLiquidity)
         iterationTierLiquidityState.push(iterationState)
@@ -275,6 +279,9 @@ const command = function (options) {
             }
 
             numTiers = nextTiers
+            if (numTiers > largestNumTiers) {
+                largestNumTiers = numTiers
+            }
         }
     }
 
@@ -286,7 +293,14 @@ const command = function (options) {
     })
 
     if (options.outputTierFilepath) {
-        writeFileSync(options.outputTierFilepath, iterationTierLiquidityState.map(state => state.join(',')).join('\n'))
+        const iterationTierLiquidityStateHeader = ['Iteration', 'NewYield']
+        for (let tc = 0; tc < largestNumTiers; tc++) {
+            iterationTierLiquidityStateHeader.push(`Tier${tc}Liquidity`)
+            iterationTierLiquidityStateHeader.push(`Tier${tc}PrizeCount`)
+            iterationTierLiquidityStateHeader.push(`Tier${tc}PrizeSize`)
+        }
+        iterationTierLiquidityStateHeader.push('CanaryLiquidity')
+        writeFileSync(options.outputTierFilepath, iterationTierLiquidityStateHeader.join(',') + '\n' + iterationTierLiquidityState.map(state => state.join(',')).join('\n'))
     }
 
     if (options.outputPrizesFilepath) {
