@@ -40,11 +40,12 @@ const command = function (options) {
 
     let iterationPrizeLiquidity = []
     let prizeLiquidity = 0
+    let totalYield = 0
     let numTiers = options.tiers
 
     const GRAND_PRIZE_FREQUENCY = options.grandPrizeFrequency
-    const SHARES_PER_TIER = 100
-    const CANARY_SHARE = 10
+    const SHARES_PER_TIER = parseInt(options.tierShares)
+    const CANARY_SHARE = parseInt(options.canaryShares)
     const TOTAL_SUPPLY = USER_BALANCE * options.users
 
     function getTotalShares(numTiers) {
@@ -62,8 +63,11 @@ const command = function (options) {
     let yieldShareExchangeRate = 0
     let reserve = 0
     let canarySpent = 0
-    let largestDeficit = 0
     let largestNumTiers = 0
+
+    let totalDroppedPrizes = 0
+    let tierDroppedLiquidity = 0
+    let canaryDroppedLiquidity = 0
 
     function getTierLiquidity(t) {
         let exchangeRate = tierExchangeRates[t]
@@ -78,22 +82,38 @@ const command = function (options) {
         return tierLiquidity
     }
 
-    for (let i = 0; i < options.iterations; i++) {
+    function getCanaryLiquidity() {
+        return (yieldShareExchangeRate - canaryExchangeRate)*CANARY_SHARE
+    }
+
+    function consumeTierLiquidity(t, amount) {
+        const deltaExchangeRate = amount / SHARES_PER_TIER
+        tierExchangeRates[t] += deltaExchangeRate
+        if (tierExchangeRates[t] > yieldShareExchangeRate) {
+            tierExchangeRates[t] = yieldShareExchangeRate
+        }
+    }
+
+    function addYield(amount) {
+        totalYield += parseFloat(amount)
         // add yield
-        prizeLiquidity += parseInt(options.yield)
+        prizeLiquidity += parseInt(amount)
 
         // update yield share exchange rate
         const totalShares = getTotalShares(numTiers)
-        yieldShareExchangeRate = yieldShareExchangeRate + options.yield / totalShares
+        yieldShareExchangeRate = yieldShareExchangeRate + amount / totalShares
+    }
+
+    for (let i = 0; i < options.iterations; i++) {
+        addYield(options.yield)
 
         // calculate canary liquidity
-        const canaryLiquidity = (yieldShareExchangeRate - canaryExchangeRate)*CANARY_SHARE
+        const canaryLiquidity = getCanaryLiquidity()
         
         let iterationAwardedPrizeLiquidity = 0
-
         let largestTier = null
+        let largestTierAwardedPrizeCount = 0
         let highestTierClaimPassed = false
-
         
         const iterationState = [i, options.yield]
         for (let t = 0; t < numTiers; t++) {
@@ -110,37 +130,34 @@ const command = function (options) {
         }
 
         for (let t = 0; t < numTiers; t++) {
-
-            let tierDroppedPrizes = 0
-
             if (!tierExchangeRates[t]) {
                 tierExchangeRates[t] = 0
             }
-            const tierLiquidity = getTierLiquidity(t)
-            let remainingTierLiquidity = tierLiquidity
-            if (tierLiquidity <= 0) {
-                log(chalk.yellow(`Tier ${t} at ${tierLiquidity}`))
-            }
 
             const tierPrizeCount = prizeCount(t)
-            const prizeSize = Math.trunc(tierLiquidity) / tierPrizeCount
+            const prizeSize = Math.trunc(getTierLiquidity(t)) / tierPrizeCount
             const K = Math.log(1/GRAND_PRIZE_FREQUENCY)/(-1*numTiers+1)
             const tierOdds = Math.E**(K*(t - (numTiers - 1)))
 
-            // log(`tier ${t}, k ${K}, odds ${tierOdds}, numTiers ${numTiers}`)
-
             let tierMatchingPrizeCount = 0
-            let tierAwardedPrizeLiquidity = 0
             let tierAwardedPrizeCount = 0
+            let tierDroppedPrizes = 0
             for (let u = 0; u < options.users; u++) {
                 const divRand = (Math.random()*TOTAL_SUPPLY) / tierPrizeCount
                 const totalOdds = tierOdds*USER_BALANCE
                 const isWinner = divRand < totalOdds
                 if (isWinner && prizeSize >= MIN_PRIZE) {
                     tierMatchingPrizeCount++
-                    if (remainingTierLiquidity >= prizeSize) {
-                        tierAwardedPrizeLiquidity += prizeSize
-                        remainingTierLiquidity -= prizeSize
+                    // if sufficient liquidity
+                    if (getTierLiquidity(t) >= prizeSize) {
+                        consumeTierLiquidity(t, prizeSize)
+                        prizeLiquidity -= prizeSize
+                        iterationAwardedPrizeLiquidity += prizeSize
+                        tierAwardedPrizeCount++
+                    } else if (options.useReserve && reserve >= prizeSize) {
+                        reserve -= prizeSize
+                        prizeLiquidity -= prizeSize
+                        iterationAwardedPrizeLiquidity += prizeSize
                         tierAwardedPrizeCount++
                     } else {
                         tierDroppedPrizes++
@@ -149,7 +166,9 @@ const command = function (options) {
             }
             
             if (tierDroppedPrizes > 0) {
-                logv(chalk.red(`Iter ${i}: Tier: ${t}: dropped ${tierDroppedPrizes} prizes out of ${tierMatchingPrizeCount}. Insufficient tier liquidity: ${remainingTierLiquidity} with prize size ${prizeSize}`))
+                logv(chalk.red(`Iter ${i}: Tier: ${t}: dropped ${tierDroppedPrizes} prizes out of ${tierMatchingPrizeCount}. Insufficient tier liquidity: ${getTierLiquidity(t)} with prize size ${prizeSize}`))
+                tierDroppedLiquidity += tierDroppedPrizes * prizeSize
+                totalDroppedPrizes += tierDroppedPrizes
             }
 
             if (tierAwardedPrizeCount > 0) {
@@ -162,33 +181,13 @@ const command = function (options) {
                     iteration: i,
                     tier: t,
                     prizeCount: tierAwardedPrizeCount,
+                    droppedPrizeCount: tierDroppedPrizes,
                     prizeSize
                 })
             }
 
-            iterationAwardedPrizeLiquidity += tierAwardedPrizeLiquidity
-            prizeLiquidity -= tierAwardedPrizeLiquidity
-            if (prizeLiquidity < 0) {
-                log(chalk.red(`Warning: negative liquidity on iteration ${i} at tier ${t}: ${prizeLiquidity}.  Current reserve is ${reserve}.  Diff is ${prizeLiquidity + reserve}`))
-                process.exit(1)
-                // if (prizeLiquidity < largestDeficit) {
-                //     largestDeficit = prizeLiquidity
-                // }
-            }
-
-            const deltaExchangeRate = tierAwardedPrizeLiquidity / SHARES_PER_TIER
-            tierExchangeRates[t] += deltaExchangeRate
-
-            if (tierExchangeRates[t] > yieldShareExchangeRate) {
-                const excess = tierAwardedPrizeLiquidity - tierLiquidity
-                log(chalk.red(`Iter ${i}: Tier ${t} overallocated ${excess} with ${tierAwardedPrizeCount} total prizes each worth ${prizeSize}`))
-                log(chalk.yellow(`Available liquidity: ${prizeLiquidity}`))
-                log(chalk.redBright(`Ignoring debt and resetting tier ${t} to zero`))
-                tierExchangeRates[t] = yieldShareExchangeRate
-            }
-
-            if (tierAwardedPrizeCount > options.claimThreshold*tierPrizeCount) {
-                highestTierClaimPassed = true
+            if (largestTier == t) {
+                largestTierAwardedPrizeCount = tierAwardedPrizeCount
             }
         }
 
@@ -207,7 +206,6 @@ const command = function (options) {
 
         // log(`actualCanaryPrizeCount: ${actualCanaryPrizeCount}, CANARY_SHARE: ${CANARY_SHARE}, SHARES_PER_TIER: ${SHARES_PER_TIER}, numTiers: ${numTiers}, prizeCountMultiplier: ${prizeCountMultiplier}, canaryPrizeCount: ${canaryPrizeCount}`)
 
-        let canaryAwardedPrizeLiquidity = 0
         let canaryAwardedPrizeCount = 0
         let canaryDroppedPrizes = 0
         for (let u = 0; u < options.users; u++) {
@@ -216,43 +214,43 @@ const command = function (options) {
             if (isWinner && canaryPrizeSize >= MIN_PRIZE) {
                 // do the win
                 if (canaryAvailableLiquidity >= canaryPrizeSize) {
-                    canaryAwardedPrizeLiquidity += canaryPrizeSize
                     canaryAvailableLiquidity -= canaryPrizeSize
+                    prizeLiquidity -= canaryPrizeSize
+                    canaryAwardedPrizeCount++
+                } else if (options.useReserve && reserve >= canaryPrizeSize) {
+                    reserve -= canaryPrizeSize
+                    prizeLiquidity -= canaryPrizeSize
                     canaryAwardedPrizeCount++
                 } else {
                     canaryDroppedPrizes++
                 }
             }
         }
+        reserve += canaryAvailableLiquidity
+        canarySpent += canaryLiquidity - canaryAvailableLiquidity
 
         if (canaryDroppedPrizes > 0) {
             logv(chalk.red(`Iter ${i}: canary: dropped ${canaryDroppedPrizes} prizes.`))
+            canaryDroppedLiquidity += canaryDroppedPrizes * canaryPrizeSize
+            totalDroppedPrizes += canaryDroppedPrizes
         }
         
-        if (canaryAwardedPrizeLiquidity > canaryLiquidity) {
-            throw new Error(`Iter ${i}: Too much: ${canaryAwardedPrizeLiquidity}, ${canaryLiquidity}, ${canaryPrizeSize}`)
-        }
-
         if (canaryAwardedPrizeCount > 0) {
-            canarySpent += canaryAwardedPrizeLiquidity
-            prizeLiquidity -= canaryAwardedPrizeLiquidity
-            // log(chalk.dim(`Canary: ${canaryAwardedPrizeLiquidity}`))
-            reserve += canaryLiquidity - canaryAwardedPrizeLiquidity
-            // record prizes
             prizes.push({
                 iteration: i,
                 tier: numTiers,
                 prizeCount: canaryAwardedPrizeCount,
+                droppedPrizeCount: canaryDroppedPrizes,
                 prizeSize: canaryPrizeSize,
                 canary: true
             })
-        } else {
-            reserve += canaryLiquidity
         }
-        
+
         const canaryPassed = canaryAwardedPrizeCount > options.claimThreshold*canaryPrizeCount
+        const largestTierPassed = largestTierAwardedPrizeCount > options.claimThreshold*prizeCount(largestTier)
+        logv(chalk.blueBright(`Iter ${i}: canaryAwardedPrizeCount: ${canaryAwardedPrizeCount}, required: ${options.claimThreshold*canaryPrizeCount}, largestTierAwardedPrizeCount: ${largestTierAwardedPrizeCount}, required: ${options.claimThreshold*prizeCount(largestTier)}`))
         // if we are expanding the tiers
-        if (highestTierClaimPassed && canaryPassed) {
+        if (largestTierPassed && canaryPassed) {
             // set the expansion tier to the current exchange rate
             tierExchangeRates[numTiers] = yieldShareExchangeRate
             logv(chalk.green(`Iter ${i}: increased number of tiers from ${numTiers} to ${numTiers+1}`))
@@ -284,12 +282,14 @@ const command = function (options) {
             }
         }
     }
+    // add one last yield so that final prizes are fully stocked up
+    addYield(options.yield)
 
-    let totalPrizeCount = 0
-    let totalPrizeAmount = 0
+    let totalAwardedPrizeCount = 0
+    let totalAwardedPrizeLiquidity = 0
     prizes.forEach(prize => {
-        totalPrizeCount += prize.prizeCount
-        totalPrizeAmount += prize.prizeSize*prize.prizeCount
+        totalAwardedPrizeCount += prize.prizeCount
+        totalAwardedPrizeLiquidity += prize.prizeSize*prize.prizeCount
     })
 
     if (options.outputTierFilepath) {
@@ -297,6 +297,7 @@ const command = function (options) {
         for (let tc = 0; tc < largestNumTiers; tc++) {
             iterationTierLiquidityStateHeader.push(`Tier${tc}Liquidity`)
             iterationTierLiquidityStateHeader.push(`Tier${tc}PrizeCount`)
+            iterationTierLiquidityStateHeader.push(`Tier${tc}DroppedPrizeCount`)
             iterationTierLiquidityStateHeader.push(`Tier${tc}PrizeSize`)
         }
         iterationTierLiquidityStateHeader.push('CanaryLiquidity')
@@ -304,23 +305,24 @@ const command = function (options) {
     }
 
     if (options.outputPrizesFilepath) {
-        writeFileSync(options.outputPrizesFilepath, prizes.map(prize => [prize.iteration, prize.tier, prize.prizeCount, prize.prizeSize].join(',')).join('\n'))
+        writeFileSync(options.outputPrizesFilepath, prizes.map(prize => [prize.iteration, prize.tier, prize.prizeCount, prize.droppedPrizeCount, prize.prizeSize].join(',')).join('\n'))
     }
 
     log("")
     log(chalk.magentaBright(`--- Final Prize Tiers ---`))
     log("")
-    let totalPrizes = 0
+    let finalPrizeTierTotal = 0
     for (let i = 0; i < numTiers; i++) {
-        totalPrizes += getTierLiquidity(i)
+        finalPrizeTierTotal += getTierLiquidity(i)
         log(chalk.magentaBright(`Tier ${i} prize size: ${getTierLiquidity(i) / prizeCount(i)}, count: ${prizeCount(i)}`))
     }
+    finalPrizeTierTotal += getCanaryLiquidity()
 
     log("")
     log(chalk.white(`--- Prizes ---`))
     log("")
-    log(chalk.white(`Total number of prizes: ${totalPrizeCount}`))
-    log(chalk.white(`Total prize amount given out: ${totalPrizeAmount}`))
+    log(chalk.white(`Total number of prizes: ${totalAwardedPrizeCount}`))
+    log(chalk.white(`Total prize amount given out: ${totalAwardedPrizeLiquidity}`))
     
     log("")
     log(chalk.cyan(`--- Final State ---`))
@@ -339,9 +341,11 @@ const command = function (options) {
     log("")
 
     log(chalk.dim(`Canary spent: ${canarySpent}`))
-    log(chalk.dim(`Largest deficit: ${largestDeficit}`))
-    log(chalk.dim(`total yield: ${prizeLiquidity + totalPrizeAmount}`))
-    log(chalk.dim(`Total available prizes at end: ${totalPrizes}`))
+    log(chalk.dim(`Total yield accrued: \t\t${totalYield}`))
+    log(chalk.dim(`Total accounted liquidity: \t${Math.round(finalPrizeTierTotal + reserve + totalAwardedPrizeLiquidity)}`))
+    log(chalk.dim(`Total prizes: ${totalAwardedPrizeCount}`))
+    log(chalk.dim(`Total dropped prizes: ${totalDroppedPrizes}`))
+    log(chalk.dim(`Total dropped liquidity: ${canaryDroppedLiquidity + tierDroppedLiquidity}`))
     log(chalk.dim(`Mean prizes: ${stats.mean(iterationPrizeLiquidity)}`))
     log(chalk.dim(`Median prizes: ${stats.median(iterationPrizeLiquidity)}`))
     log(chalk.dim(`Standard deviation: ${stats.stdev(iterationPrizeLiquidity)}`))
@@ -354,6 +358,8 @@ const command = function (options) {
 }
 
 program.option('-y, --yield <number>', 'The amount of yield per iteration', 2800)
+program.option('-ts, --tierShares <number>', 'The number of shares per tier', 100)
+program.option('-cs, --canaryShares <number>', 'The number of shares for the canary tier', 10)
 program.option('-i, --iterations <number>', 'The number of iterations to run', 1)
 program.option('-g, --grandPrizeFrequency <number>', 'The frequency of the grand prize', 52)
 program.option('-ct, --claimThreshold <number>', 'The percentage of prizes that must be claimed to bump', 0.9)
@@ -362,6 +368,7 @@ program.option('-t, --tiers <number>', 'The number of tiers (> 2)', 2)
 program.option('-v, --verbosity', 'Verbose logging', false)
 program.option('-otf, --outputTierFilepath <filepath>', 'Output the iteration tier liquidity as a csv')
 program.option('-opf, --outputPrizesFilepath <filepath>', 'Output the prizes as a csv')
+program.option('-r, --useReserve', 'Utilize reserve prize liquidity', false)
 
 program.action(command)
 
