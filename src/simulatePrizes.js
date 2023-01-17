@@ -46,10 +46,11 @@ const command = function (options) {
     const GRAND_PRIZE_FREQUENCY = options.grandPrizeFrequency
     const SHARES_PER_TIER = parseInt(options.tierShares)
     const CANARY_SHARE = parseInt(options.canaryShares)
+    const RESERVE_SHARES = CANARY_SHARE
     const TOTAL_SUPPLY = USER_BALANCE * options.users
 
     function getTotalShares(numTiers) {
-        return numTiers * SHARES_PER_TIER + CANARY_SHARE
+        return numTiers * SHARES_PER_TIER + CANARY_SHARE + RESERVE_SHARES
     }
 
     function prizeCount(tier) {
@@ -58,7 +59,8 @@ const command = function (options) {
 
     // Store the last exchange rate for tiers. This is the exchange rate they last claimed at
     let tierExchangeRates = {}
-    let canaryExchangeRate = 0
+    // previous yield share exchange rate
+    let lastYieldShareExchangeRate = 0
     // Store the global yield share exchange rate.
     let yieldShareExchangeRate = 0
     let reserve = 0
@@ -83,7 +85,11 @@ const command = function (options) {
     }
 
     function getCanaryLiquidity() {
-        return (yieldShareExchangeRate - canaryExchangeRate)*CANARY_SHARE
+        return (yieldShareExchangeRate - lastYieldShareExchangeRate)*CANARY_SHARE
+    }
+
+    function getReserveLiquidity() {
+        return (yieldShareExchangeRate - lastYieldShareExchangeRate)*RESERVE_SHARES
     }
 
     function consumeTierLiquidity(t, amount) {
@@ -160,6 +166,7 @@ const command = function (options) {
                         iterationAwardedPrizeLiquidity += prizeSize
                         tierAwardedPrizeCount++
                     } else {
+                        logv(chalk.bgMagenta(`Iter ${i}: Dropping prize ${prizeSize} when reserve at ${reserve}`))
                         tierDroppedPrizes++
                     }
                 }
@@ -195,7 +202,7 @@ const command = function (options) {
 
         // now do Canary
         let canaryAvailableLiquidity = canaryLiquidity
-        canaryExchangeRate = yieldShareExchangeRate
+        lastYieldShareExchangeRate = yieldShareExchangeRate
 
         const actualCanaryPrizeCount = prizeCount(numTiers)
         const m3 = CANARY_SHARE / getTotalShares(numTiers)
@@ -222,11 +229,12 @@ const command = function (options) {
                     prizeLiquidity -= canaryPrizeSize
                     canaryAwardedPrizeCount++
                 } else {
+                    logv(chalk.bgMagenta(`Iter ${i}: Dropping canary prize ${canaryPrizeSize} when reserve at ${reserve}`))
                     canaryDroppedPrizes++
                 }
             }
         }
-        reserve += canaryAvailableLiquidity
+        reserve += canaryAvailableLiquidity + getReserveLiquidity()
         canarySpent += canaryLiquidity - canaryAvailableLiquidity
 
         if (canaryDroppedPrizes > 0) {
@@ -257,7 +265,6 @@ const command = function (options) {
             numTiers++
         } else {
             const nextTiers = Math.max(largestTier+1, 2)
-            let tierDeltaExchangeRate = 0
             if (numTiers > nextTiers) {
                 logv(chalk.yellow(`Decreased tiers from ${numTiers} to ${nextTiers}`))
                 // For each tier that will be removed
@@ -273,13 +280,16 @@ const command = function (options) {
                     // reset that tier
                     tierExchangeRates[tier] = 0
                 }
-                yieldShareExchangeRate += tierDeltaExchangeRate
             }
 
             numTiers = nextTiers
             if (numTiers > largestNumTiers) {
                 largestNumTiers = numTiers
             }
+        }
+
+        if (reserve == 0) {
+            log(`Reserve is zero`)
         }
     }
     // add one last yield so that final prizes are fully stocked up
